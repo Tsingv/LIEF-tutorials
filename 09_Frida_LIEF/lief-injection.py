@@ -7,35 +7,41 @@ import subprocess
 import tempfile
 import os
 import pathlib
+import sys
+import getpass
 
-def rcmd(cmd):
-    if type(cmd) is str:
-        cmd = cmd.split(" ")
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=False, check=False)
-    if p.returncode > 0:
-        print(p.stdout.decode("utf8"))
-        print(p.stderr.decode("utf8"))
+APKSIGNER = "/Users/clearain/Library/Android/sdk/build-tools/35.0.0-rc1/apksigner"
+ZIPALIGN = "/Users/clearain/Library/Android/sdk/build-tools/35.0.0-rc1/zipalign"
+ADB       = "/opt/homebrew/bin/adb"
+# KEYSTORE  = "keystore.jks"
+# if not os.path.exists(KEYSTORE):
+#     print(f"[-] {KEYSTORE} not found")
+#     exit(1)
+# KEYSTOREPASS = getpass.getpass("Enter keystore password: ")
+RELEASEKEY = "releasekey.pk8"
+RELEASECERT = "releasekey.x509.pem"
+if not (os.path.exists(RELEASEKEY) and os.path.exists(RELEASECERT)):
+    print(f"[-] {RELEASEKEY} or {RELEASECERT} not found")
+    exit(1)
 
-
-JARSIGNER = shutil.which("jarsigner")
-ADB       = shutil.which("adb")
-KEYSTORE  = "keystore.jks"
-
-apk  = "org.telegram.messenger_4.8.4-12207.apk"
+apk  = sys.argv[1]
 lib  = "libgadget.so"
 conf = "libgadget.config.so"
+newapk = sys.argv[1].split('/')[-1].replace(".apk", "_new.apk")
+libpath = sys.argv[2]
+if not libpath.endswith(".so"):
+    print(f"[-] {libpath} is not a library")
+    exit(1)
 
 workingdir = tempfile.mkdtemp(suffix='_lief_frida')
 
 # Unzip
-print(f"[+] Unzip the {apk} in {workingdir}")
-zip_ref = zipfile.ZipFile(apk, 'r')
-zip_ref.extractall(workingdir)
-zip_ref.close()
+print(f"[+] Unzip the {apk} in {workingdir} using apktool")
+os.system(f"apktool d {apk} -f -o {workingdir}")
 
 # Add 'frida-gadget-10.7.3-android-arm64.so' to libtmessages.28.so
 libdir = pathlib.Path(workingdir) / "lib"
-libcheck_path = libdir / "arm64-v8a" / "libtmessages.28.so"
+libcheck_path = libdir / "arm64-v8a" / libpath
 
 
 print(f"[+] Injecting {lib} into {libcheck_path}")
@@ -50,24 +56,25 @@ print(f"[+] Copying {lib} and {conf} in the APK")
 shutil.copy(lib, libdir / "arm64-v8a")
 shutil.copy(conf, libdir / "arm64-v8a")
 
-# Remove old signature
-shutil.rmtree(os.path.join(workingdir, "META-INF"))
+print("Waiting for modify the AndroidManifest.xml")
+print("Path: ", workingdir)
+input("Press Enter to continue...")
 
 # Zip
-print(f"[+] APK Building...")
-shutil.make_archive("new", 'zip', workingdir)
-shutil.move("new.zip", "new.apk")
+print(f"[+] APK Packing...")
+os.system(f"apktool b {workingdir} -o {newapk}")
 
-cmd_sign = [
-    JARSIGNER,
-    "-verbose",
-    "-sigalg", "SHA1withRSA",
-    "-digestalg", "SHA1",
-    "-keystore", KEYSTORE,
-    "-storepass", "android",
-    "new.apk",
-    "android"]
+# # Align
+# print(f"[+] Aligning the APK")
+# os.system(f"{ZIPALIGN} -f 8 {newapk} {newapk.replace('_new.apk', '_aligned.apk')}")
 
+# Sign
 print(f"[+] Signing the APK")
-rcmd(cmd_sign)
+# os.system(f"{APKSIGNER} sign --ks {KEYSTORE} --ks-pass pass:{KEYSTOREPASS} {newapk}")
+os.system(f"{APKSIGNER} sign --align-file-size --key {RELEASEKEY} --cert {RELEASECERT} {newapk}")
 
+if os.path.exists(newapk + ".idsig"):
+    os.remove(newapk + ".idsig")
+
+# clean tempfile
+shutil.rmtree(workingdir)
